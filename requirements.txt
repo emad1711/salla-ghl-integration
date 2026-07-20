@@ -1,0 +1,10 @@
+fastapi
+httpx
+redis
+sentry-sdk[fastapi]
+sqlalchemy
+asyncpg
+aiosqlite
+pytest
+pytest-asyncio
+uvicorn[standard]

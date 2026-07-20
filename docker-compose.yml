@@ -1,0 +1,81 @@
+services:
+  api:
+    build: .
+    container_name: salla-ghl-api
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://salla:salla@postgres:5432/salla_ghl}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      ENABLE_REDIS: ${ENABLE_REDIS:-true}
+    ports:
+      - "8010:8010"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  worker:
+    build: .
+    container_name: salla-ghl-worker
+    command: ["python", "-m", "salla_ghl.workers.tasks"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://salla:salla@postgres:5432/salla_ghl}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      ENABLE_REDIS: ${ENABLE_REDIS:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  scheduler:
+    build: .
+    container_name: salla-ghl-scheduler
+    command: ["python", "-m", "salla_ghl.workers.scheduler"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://salla:salla@postgres:5432/salla_ghl}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      ENABLE_REDIS: ${ENABLE_REDIS:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: salla-ghl-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-salla_ghl}
+      POSTGRES_USER: ${POSTGRES_USER:-salla}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-salla}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-salla} -d $${POSTGRES_DB:-salla_ghl}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: salla-ghl-redis
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

@@ -12,6 +12,11 @@ from salla_ghl.workers.queue import enqueue_event
 router = APIRouter(tags=["webhooks"])
 
 
+@router.get("/debug/test")
+async def debug_test() -> dict[str, object]:
+    return {"ok": True, "message": "debug route works"}
+
+
 async def process_in_background(event_id: str) -> None:
     async for session in get_session():
         await EventService(session).process_event(event_id)

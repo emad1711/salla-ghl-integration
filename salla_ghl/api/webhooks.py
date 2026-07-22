@@ -1,4 +1,5 @@
 import json
+import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,7 @@ from salla_ghl.services.event_service import EventService
 from salla_ghl.services.salla_authorization_service import SallaAuthorizationError, SallaAuthorizationService
 from salla_ghl.workers.queue import enqueue_event
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["webhooks"])
 
 
@@ -54,6 +56,20 @@ async def salla_orders_webhook(
     x_salla_signature: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
 ) -> dict[str, object]:
+    raw_body = await request.body()
+    logger.warning(
+        "Salla orders webhook debug %s",
+        json.dumps(
+            {
+                "request_url": str(request.url),
+                "headers": dict(request.headers),
+                "x_salla_signature": x_salla_signature,
+                "authorization": authorization,
+                "raw_body": raw_body.decode("utf-8", errors="replace"),
+            },
+            ensure_ascii=False,
+        ),
+    )
     # Backwards-compatible URL already configured in Salla.
     response = await salla_webhook(
         request=request,

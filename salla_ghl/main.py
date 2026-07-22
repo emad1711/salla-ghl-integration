@@ -1,12 +1,16 @@
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+import json
+import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from salla_ghl.api import admin, health, internal, webhooks
 from salla_ghl.core.logging import configure_logging
 from salla_ghl.core.monitoring import configure_monitoring
 from salla_ghl.db.session import init_db
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -19,6 +23,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Salla to GoHighLevel Production Integration", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def log_every_request(request: Request, call_next):
+        response = await call_next(request)
+        logger.warning(
+            "Incoming request debug %s",
+            json.dumps(
+                {
+                    "method": request.method,
+                    "url": str(request.url),
+                    "headers": dict(request.headers),
+                    "status_code": response.status_code,
+                },
+                ensure_ascii=False,
+            ),
+        )
+        return response
+
     app.include_router(health.router)
     app.include_router(webhooks.router)
     app.include_router(admin.router)

@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["webhooks"])
 
 
+def raw_headers(request: Request) -> list[tuple[str, str]]:
+    return [
+        (name.decode("latin-1", errors="replace"), value.decode("latin-1", errors="replace"))
+        for name, value in request.scope.get("headers", [])
+    ]
+
+
 @router.get("/debug/test")
 async def debug_test() -> dict[str, object]:
     return {"ok": True, "message": "debug route works"}
@@ -69,6 +76,8 @@ async def salla_orders_webhook(
             {
                 "request_url": str(request.url),
                 "headers": dict(request.headers),
+                "raw_headers": raw_headers(request),
+                "x_salla_security_strategy": request.headers.get("x-salla-security-strategy"),
                 "x_salla_signature": x_salla_signature,
                 "authorization": authorization,
                 "raw_body": raw_body.decode("utf-8", errors="replace"),

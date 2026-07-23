@@ -13,6 +13,13 @@ from salla_ghl.db.session import init_db
 logger = logging.getLogger(__name__)
 
 
+def raw_headers(request: Request) -> list[tuple[str, str]]:
+    return [
+        (name.decode("latin-1", errors="replace"), value.decode("latin-1", errors="replace"))
+        for name, value in request.scope.get("headers", [])
+    ]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
@@ -37,6 +44,10 @@ def create_app() -> FastAPI:
                     "method": request.method,
                     "url": str(request.url),
                     "headers": dict(request.headers),
+                    "raw_headers": raw_headers(request),
+                    "x_salla_security_strategy": request.headers.get("x-salla-security-strategy"),
+                    "x_salla_signature": request.headers.get("x-salla-signature"),
+                    "authorization": request.headers.get("authorization"),
                     "raw_body": raw_body.decode("utf-8", errors="replace"),
                 },
                 ensure_ascii=False,
@@ -54,6 +65,10 @@ def create_app() -> FastAPI:
                     "method": request.method,
                     "url": str(request.url),
                     "headers": dict(request.headers),
+                    "raw_headers": raw_headers(request),
+                    "x_salla_security_strategy": request.headers.get("x-salla-security-strategy"),
+                    "x_salla_signature": request.headers.get("x-salla-signature"),
+                    "authorization": request.headers.get("authorization"),
                     "status_code": response.status_code,
                 },
                 ensure_ascii=False,

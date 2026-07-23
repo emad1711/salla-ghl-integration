@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Any
 
@@ -31,6 +32,26 @@ class GHLClient:
             "Content-Type": "application/json",
         }
 
+    def _masked_headers(self) -> dict[str, str]:
+        headers = self.headers.copy()
+        if headers.get("Authorization"):
+            headers["Authorization"] = "Bearer ***"
+        return headers
+
+    def _response_json(self, response: httpx.Response) -> Any:
+        try:
+            return response.json()
+        except ValueError:
+            return None
+
+    def _validation_errors(self, response_json: Any) -> Any:
+        if not isinstance(response_json, dict):
+            return None
+        for key in ("errors", "error", "message", "details"):
+            if key in response_json:
+                return response_json[key]
+        return None
+
     async def request(self, method: str, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
         if not settings.ghl_configured:
             raise GHLClientError("Missing GHL_PRIVATE_INTEGRATION_TOKEN or GHL_LOCATION_ID")
@@ -48,6 +69,24 @@ class GHLClient:
                 response_body=str(exc),
                 succeeded=False,
             )
+            logger.error(
+                "GHL request failed %s",
+                json.dumps(
+                    {
+                        "method": method,
+                        "path": path,
+                        "url": url,
+                        "request_headers": self._masked_headers(),
+                        "request_payload": json_body,
+                        "status_code": None,
+                        "response_text": str(exc),
+                        "response_json": None,
+                        "validation_errors": None,
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            )
             raise GHLClientError(str(exc)) from exc
 
         succeeded = response.status_code < 400
@@ -58,7 +97,26 @@ class GHLClient:
             succeeded=succeeded,
         )
         if not succeeded:
-            logger.error("GHL request failed", extra={"trace_id": response.headers.get("x-request-id")})
+            response_json = self._response_json(response)
+            logger.error(
+                "GHL request failed %s",
+                json.dumps(
+                    {
+                        "method": method,
+                        "path": path,
+                        "url": url,
+                        "request_headers": self._masked_headers(),
+                        "request_payload": json_body,
+                        "status_code": response.status_code,
+                        "response_text": response.text,
+                        "response_json": response_json,
+                        "validation_errors": self._validation_errors(response_json),
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                extra={"trace_id": response.headers.get("x-request-id")},
+            )
             raise GHLClientError("GHL request failed", status_code=response.status_code, response_body=response.text)
 
         if response.text:

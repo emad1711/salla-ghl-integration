@@ -37,7 +37,7 @@ class GHLSyncService:
             "firstName": customer.first_name,
             "lastName": customer.last_name,
             "email": customer.email,
-            "phone": customer.phone,
+            "phone": self._phone_value(customer.phone),
         }
         payload.update({key: value for key, value in optional_fields.items() if value})
 
@@ -67,6 +67,11 @@ class GHLSyncService:
             payload["customFields"] = custom_fields
 
         return payload
+
+    def _phone_value(self, phone: Any) -> str | None:
+        if phone is None:
+            return None
+        return str(phone)
 
     def _build_opportunity_payload(self, customer: Customer, order: Order) -> dict[str, Any]:
         return {

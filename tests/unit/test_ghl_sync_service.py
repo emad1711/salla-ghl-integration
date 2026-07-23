@@ -45,3 +45,27 @@ def test_builds_order_opportunity_payload() -> None:
     assert payload["contactId"] == "contact-1"
     assert payload["name"] == "Salla Order ORD-123"
     assert payload["monetaryValue"] == 250.0
+
+
+def test_contact_payload_phone_is_always_string_when_present() -> None:
+    numeric_customer = Customer(phone=966500000000)  # type: ignore[arg-type]
+    leading_zero_customer = Customer(phone="0500000000")
+
+    numeric_payload = GHLSyncService(None)._build_contact_payload(numeric_customer, None, set())  # type: ignore[arg-type]
+    leading_zero_payload = GHLSyncService(None)._build_contact_payload(
+        leading_zero_customer,
+        None,
+        set(),
+    )  # type: ignore[arg-type]
+
+    assert numeric_payload["phone"] == "966500000000"
+    assert isinstance(numeric_payload["phone"], str)
+    assert leading_zero_payload["phone"] == "0500000000"
+
+
+def test_contact_payload_omits_empty_phone() -> None:
+    customer = Customer(phone=None)
+
+    payload = GHLSyncService(None)._build_contact_payload(customer, None, set())  # type: ignore[arg-type]
+
+    assert "phone" not in payload

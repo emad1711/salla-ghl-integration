@@ -124,6 +124,8 @@ Full production authorization details, accepted payload examples, SQL schema, lo
 
 Railway-specific deployment commands and variable setup are in `docs/railway_deployment.md`.
 
+Free-hosting comparison and the selected no-card deployment path are in `docs/free_hosting_analysis.md`.
+
 ## Local Health Check
 
 ```powershell

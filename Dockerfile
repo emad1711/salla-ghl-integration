@@ -12,7 +12,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
 COPY salla_ghl ./salla_ghl
 COPY alembic ./alembic
+COPY scripts ./scripts
 
 EXPOSE 8010
 
-CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8010}"]
+CMD ["sh", "scripts/start_web.sh"]

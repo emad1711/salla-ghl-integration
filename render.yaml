@@ -1,0 +1,78 @@
+services:
+  - type: web
+    name: salla-ghl-integration
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: sh scripts/start_web.sh
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SERVICE_NAME
+        value: salla-ghl-webhook
+      - key: LOG_LEVEL
+        value: INFO
+      - key: ENABLE_REDIS
+        value: "false"
+      - key: RUN_INLINE_SCHEDULER
+        value: "true"
+      - key: RUN_INLINE_WORKER
+        value: "false"
+      - key: SALLA_API_BASE_URL
+        value: https://api.salla.dev/admin/v2
+      - key: GHL_BASE_URL
+        value: https://services.leadconnectorhq.com
+      - key: GHL_API_VERSION
+        value: "2021-07-28"
+      - key: GHL_SOURCE
+        value: Salla
+      - key: GHL_TIMEOUT_SECONDS
+        value: "20"
+      - key: GHL_OPPORTUNITY_STATUS
+        value: open
+      - key: SALLA_ALLOWED_EVENTS
+        value: order.created,order.updated,order.status.updated,order.completed,order.delivered,order.cancelled,order.refunded,order.canceled,order.status_changed,order.updated_status,customer.created,customer.registered,customer.updated,customer.created_or_registered,abandoned.cart,abandoned.cart.status.changed,abandoned.cart.purchased,cart.abandoned,abandoned_cart.created,abandoned.cart.created,product.stock.updated,product.quantity.updated,product.updated
+      - key: VIP_TOTAL_SPENT_THRESHOLD
+        value: "1000"
+      - key: LOYALTY_POINTS_PER_CURRENCY_UNIT
+        value: "1"
+      - key: LOYALTY_POINTS_PER_ORDER
+        value: "0"
+      - key: LOYALTY_ELIGIBLE_STATUSES
+        value: created,paid,completed,delivered
+      - key: INACTIVE_DAYS_THRESHOLD
+        value: "60"
+      - key: REVIEW_REQUEST_DELAY_HOURS
+        value: "48"
+      - key: ABANDONED_CART_DELAYS_MINUTES
+        value: 30,1440,2880
+      - key: MAX_RETRY_ATTEMPTS
+        value: "5"
+      - key: RETRY_BASE_DELAY_SECONDS
+        value: "30"
+      - key: APP_BASE_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: GHL_PRIVATE_INTEGRATION_TOKEN
+        sync: false
+      - key: GHL_LOCATION_ID
+        sync: false
+      - key: GHL_PIPELINE_ID
+        sync: false
+      - key: GHL_PIPELINE_STAGE_ID
+        sync: false
+      - key: SALLA_CLIENT_ID
+        sync: false
+      - key: SALLA_CLIENT_SECRET
+        sync: false
+      - key: SALLA_WEBHOOK_SECRET
+        sync: false
+      - key: SALLA_WEBHOOK_TOKEN
+        sync: false
+      - key: ADMIN_API_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false

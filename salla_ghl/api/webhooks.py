@@ -21,6 +21,27 @@ def raw_headers(request: Request) -> list[tuple[str, str]]:
     ]
 
 
+def verify_salla_webhook_auth(
+    *,
+    raw_body: bytes,
+    request: Request,
+    x_salla_signature: str | None,
+    authorization: str | None,
+) -> None:
+    request_path = str(request.url.path)
+    security_strategy = (request.headers.get("x-salla-security-strategy") or "Signature").strip().lower()
+    if security_strategy == "token":
+        verify_salla_token(
+            authorization,
+            request_path=request_path,
+            x_salla_signature=x_salla_signature,
+            signature_validation_passed=False,
+        )
+        return
+
+    verify_salla_signature(raw_body, x_salla_signature, request_path=request_path, authorization=authorization)
+
+
 @router.get("/debug/test")
 async def debug_test() -> dict[str, object]:
     return {"ok": True, "message": "debug route works"}
@@ -40,13 +61,11 @@ async def salla_webhook(
     authorization: str | None = Header(default=None),
 ) -> dict[str, object]:
     raw_body = await request.body()
-    request_path = str(request.url.path)
-    verify_salla_signature(raw_body, x_salla_signature, request_path=request_path, authorization=authorization)
-    verify_salla_token(
-        authorization,
-        request_path=request_path,
+    verify_salla_webhook_auth(
+        raw_body=raw_body,
+        request=request,
         x_salla_signature=x_salla_signature,
-        signature_validation_passed=True,
+        authorization=authorization,
     )
 
     try:
@@ -104,13 +123,11 @@ async def salla_authorize_webhook(
     authorization: str | None = Header(default=None),
 ) -> dict[str, object]:
     raw_body = await request.body()
-    request_path = str(request.url.path)
-    verify_salla_signature(raw_body, x_salla_signature, request_path=request_path, authorization=authorization)
-    verify_salla_token(
-        authorization,
-        request_path=request_path,
+    verify_salla_webhook_auth(
+        raw_body=raw_body,
+        request=request,
         x_salla_signature=x_salla_signature,
-        signature_validation_passed=True,
+        authorization=authorization,
     )
 
     try:

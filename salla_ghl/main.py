@@ -18,11 +18,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     configure_monitoring()
     await init_db()
+    for route in app.routes:
+        print(route.path, route.methods)
     yield
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Salla to GoHighLevel Production Integration", lifespan=lifespan)
+
+    @app.api_route("/debug/test", methods=["GET", "POST"])
+    async def debug_test(request: Request) -> dict[str, object]:
+        raw_body = await request.body()
+        logger.warning(
+            "Debug test route %s",
+            json.dumps(
+                {
+                    "method": request.method,
+                    "url": str(request.url),
+                    "headers": dict(request.headers),
+                    "raw_body": raw_body.decode("utf-8", errors="replace"),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        return {"ok": True, "message": "debug route works"}
 
     @app.middleware("http")
     async def log_every_request(request: Request, call_next):

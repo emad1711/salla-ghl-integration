@@ -33,8 +33,14 @@ async def salla_webhook(
     authorization: str | None = Header(default=None),
 ) -> dict[str, object]:
     raw_body = await request.body()
-    verify_salla_signature(raw_body, x_salla_signature)
-    verify_salla_token(authorization)
+    request_path = str(request.url.path)
+    verify_salla_signature(raw_body, x_salla_signature, request_path=request_path, authorization=authorization)
+    verify_salla_token(
+        authorization,
+        request_path=request_path,
+        x_salla_signature=x_salla_signature,
+        signature_validation_passed=True,
+    )
 
     try:
         event_id, created, status = await EventService(session).receive(raw_body)
@@ -89,8 +95,14 @@ async def salla_authorize_webhook(
     authorization: str | None = Header(default=None),
 ) -> dict[str, object]:
     raw_body = await request.body()
-    verify_salla_signature(raw_body, x_salla_signature)
-    verify_salla_token(authorization)
+    request_path = str(request.url.path)
+    verify_salla_signature(raw_body, x_salla_signature, request_path=request_path, authorization=authorization)
+    verify_salla_token(
+        authorization,
+        request_path=request_path,
+        x_salla_signature=x_salla_signature,
+        signature_validation_passed=True,
+    )
 
     try:
         payload = json.loads(raw_body.decode("utf-8"))

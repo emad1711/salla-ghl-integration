@@ -19,7 +19,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_monitoring()
     await init_db()
     for route in app.routes:
-        print(route.path, route.methods)
+        if hasattr(route, "path"):
+            print(route.path, getattr(route, "methods", None))
     yield
 
 

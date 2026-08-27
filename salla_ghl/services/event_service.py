@@ -19,6 +19,107 @@ from salla_ghl.services.workflow_engine import WorkflowEngine
 logger = logging.getLogger(__name__)
 
 
+def _get_with_path(source: dict[str, Any], *paths: str) -> tuple[str | None, Any]:
+    for path in paths:
+        current: Any = source
+        for part in path.split("."):
+            if not isinstance(current, dict) or part not in current:
+                current = None
+                break
+            current = current[part]
+        if current not in (None, "", []):
+            return path, current
+    return None, None
+
+
+def _mask_email(value: Any) -> str | None:
+    if not value:
+        return None
+    email = str(value)
+    if "@" not in email:
+        return "***"
+    name, domain = email.split("@", 1)
+    return f"{name[:2]}***@{domain}"
+
+
+def _mask_phone(value: Any) -> str | None:
+    if not value:
+        return None
+    phone = str(value)
+    return f"{phone[:4]}***{phone[-2:]}" if len(phone) > 6 else "***"
+
+
+def _cart_abandoned_diagnostic(payload: dict[str, Any]) -> dict[str, Any]:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    cart_id_path, cart_id = _get_with_path(data, "id", "cart.id", "checkout.id")
+    checkout_url_path, checkout_url = _get_with_path(data, "checkout_url", "urls.checkout", "url", "cart.url")
+    cart_total_path, cart_total = _get_with_path(data, "amounts.total", "total", "total.amount", "cart.total")
+    currency_path, currency = _get_with_path(
+        data,
+        "amounts.total.currency",
+        "total.currency",
+        "cart.currency",
+        "currency",
+    )
+    items_path, raw_items = _get_with_path(data, "items", "products")
+    items = raw_items if isinstance(raw_items, list) else []
+    customer_email_path, customer_email = _get_with_path(
+        data,
+        "customer.email",
+        "shipping.receiver.email",
+        "customer_email",
+    )
+    customer_phone_path, customer_phone = _get_with_path(
+        data,
+        "customer.mobile",
+        "customer.phone",
+        "shipping.receiver.phone",
+        "shipping.receiver.mobile",
+        "customer_mobile",
+        "customer_phone",
+    )
+    customer_name_path, customer_name = _get_with_path(
+        data,
+        "customer.name",
+        "customer.full_name",
+        "shipping.receiver.name",
+        "customer_name",
+    )
+
+    return {
+        "event": payload.get("event"),
+        "cart_id": {"path": cart_id_path, "value": cart_id},
+        "checkout_url": {"path": checkout_url_path, "value": checkout_url},
+        "cart_total": {"path": cart_total_path, "value": cart_total},
+        "currency": {"path": currency_path, "value": currency},
+        "items": {
+            "path": items_path,
+            "count": len(items),
+            "structure": [
+                {
+                    "keys": sorted(item.keys()),
+                    "product_id": _get_with_path(item, "product_id", "id", "product.id")[1],
+                    "sku": _get_with_path(item, "sku", "product.sku")[1],
+                    "quantity": _get_with_path(item, "quantity")[1],
+                    "price": _get_with_path(item, "price", "product.price")[1],
+                }
+                for item in items[:3]
+                if isinstance(item, dict)
+            ],
+        },
+        "customer": {
+            "email_path": customer_email_path,
+            "email_present": bool(customer_email),
+            "email_masked": _mask_email(customer_email),
+            "phone_path": customer_phone_path,
+            "phone_present": bool(customer_phone),
+            "phone_masked": _mask_phone(customer_phone),
+            "name_path": customer_name_path,
+            "name_present": bool(customer_name),
+        },
+    }
+
+
 class EventService:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -33,6 +134,11 @@ class EventService:
 
     async def receive(self, raw_body: bytes) -> tuple[str, bool, str]:
         payload = json.loads(raw_body.decode("utf-8"))
+        if payload.get("event") == "cart.abandoned":
+            logger.warning(
+                "SALLA_CART_ABANDONED_DIAGNOSTIC %s",
+                json.dumps(_cart_abandoned_diagnostic(payload), ensure_ascii=False, default=str),
+            )
         normalized = self.normalizer.normalize(payload)
         event, created = await self.events.create(
             event_type=normalized.event_type,
@@ -142,6 +248,14 @@ class EventService:
         await self.customers.sync_tags(customer, tags)
         ghl_contact_id = await self.ghl.sync_contact(customer, order, tags)
         await self.customers.set_ghl_contact_id(customer, ghl_contact_id)
+        abandoned_checkout_event = None
+        if normalized.cart:
+            abandoned_checkout_event = await self.ghl.trigger_abandoned_checkout_webhook(
+                customer=customer,
+                cart=normalized.cart,
+                contact_id=ghl_contact_id,
+                tags=tags,
+            )
         opportunity_id = None
         if order and normalized.event_type == "order.created":
             opportunity_id = await self.ghl.sync_order_opportunity(customer, order)
@@ -154,6 +268,7 @@ class EventService:
             "tags": sorted(tags),
             "customer_id": customer.id,
             "order_id": order.id if order else None,
+            "abandoned_checkout_event": abandoned_checkout_event,
         }
 
     async def _record_product_interests(

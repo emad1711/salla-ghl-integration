@@ -128,3 +128,58 @@ class GHLClient:
 
     async def upsert_opportunity(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.request("POST", "/opportunities/upsert", payload)
+
+    async def post_inbound_webhook(self, webhook_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=settings.ghl_timeout_seconds) as client:
+                response = await client.post(webhook_url, headers=headers, json=payload)
+        except httpx.HTTPError as exc:
+            logger.error(
+                "GHL inbound webhook failed %s",
+                json.dumps(
+                    {
+                        "url": webhook_url,
+                        "request_payload": payload,
+                        "status_code": None,
+                        "response_text": str(exc),
+                        "response_json": None,
+                        "validation_errors": None,
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            )
+            raise GHLClientError(str(exc)) from exc
+
+        if response.status_code >= 400:
+            response_json = self._response_json(response)
+            logger.error(
+                "GHL inbound webhook failed %s",
+                json.dumps(
+                    {
+                        "url": webhook_url,
+                        "request_payload": payload,
+                        "status_code": response.status_code,
+                        "response_text": response.text,
+                        "response_json": response_json,
+                        "validation_errors": self._validation_errors(response_json),
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            )
+            raise GHLClientError(
+                "GHL inbound webhook failed",
+                status_code=response.status_code,
+                response_body=response.text,
+            )
+
+        response_json = self._response_json(response)
+        return {
+            "status_code": response.status_code,
+            "body": response_json if response_json is not None else response.text,
+        }

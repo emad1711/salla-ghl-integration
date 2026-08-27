@@ -208,6 +208,21 @@ class OutboundRequest(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
 
+class GHLEventDelivery(Base):
+    __tablename__ = "ghl_event_deliveries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    event_name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    request_body: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    response_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[OutboundStatus] = mapped_column(Enum(OutboundStatus), default=OutboundStatus.pending, index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
 class SyncState(Base):
     __tablename__ = "sync_state"
 

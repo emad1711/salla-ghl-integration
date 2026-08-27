@@ -74,6 +74,7 @@ class Settings:
     ghl_pipeline_id: str = os.getenv("GHL_PIPELINE_ID", "")
     ghl_pipeline_stage_id: str = os.getenv("GHL_PIPELINE_STAGE_ID", "")
     ghl_opportunity_status: str = os.getenv("GHL_OPPORTUNITY_STATUS", "open")
+    ghl_abandoned_checkout_webhook_url: str = os.getenv("GHL_ABANDONED_CHECKOUT_WEBHOOK_URL", "")
 
     vip_total_spent_threshold: float = _float(
         os.getenv("VIP_TOTAL_SPENT_THRESHOLD") or os.getenv("GHL_VIP_ORDER_TOTAL_THRESHOLD"),

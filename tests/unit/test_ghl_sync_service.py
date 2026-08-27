@@ -1,7 +1,10 @@
 from decimal import Decimal
 
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
 from salla_ghl.core.config import settings
-from salla_ghl.db.models import Customer, Order
+from salla_ghl.db.models import Base, Customer, Order
+from salla_ghl.integrations.salla.normalizer import NormalizedCart, NormalizedOrderItem
 from salla_ghl.services.ghl_sync_service import GHLSyncService
 
 
@@ -69,3 +72,111 @@ def test_contact_payload_omits_empty_phone() -> None:
     payload = GHLSyncService(None)._build_contact_payload(customer, None, set())  # type: ignore[arg-type]
 
     assert "phone" not in payload
+
+
+def test_builds_abandoned_checkout_payload_with_real_cart_values() -> None:
+    old_location_id = settings.ghl_location_id
+    object.__setattr__(settings, "ghl_location_id", "location-1")
+    customer = Customer(
+        salla_customer_id="salla-customer-1",
+        email="buyer@example.com",
+        phone="0500000000",
+        first_name="Buyer",
+        last_name="Test",
+    )
+    cart = NormalizedCart(
+        salla_cart_id="cart-1",
+        checkout_url="https://store.test/checkout/cart-1",
+        total_amount=Decimal("250.50"),
+        currency="SAR",
+        items=[
+            NormalizedOrderItem(
+                product_id="product-1",
+                sku="SKU-1",
+                name="Product 1",
+                quantity=2,
+                unit_price=Decimal("100.25"),
+                total_price=Decimal("200.50"),
+            )
+        ],
+    )
+
+    try:
+        payload = GHLSyncService(None)._build_abandoned_checkout_payload(  # type: ignore[arg-type]
+            customer=customer,
+            cart=cart,
+            contact_id="ghl-contact-1",
+            tags={"salla-cart-abandoned"},
+        )
+    finally:
+        object.__setattr__(settings, "ghl_location_id", old_location_id)
+
+    assert payload["event"] == "salla.cart_abandoned"
+    assert payload["contactId"] == "ghl-contact-1"
+    assert payload["email"] == "buyer@example.com"
+    assert payload["phone"] == "0500000000"
+    assert payload["sallaCustomerId"] == "salla-customer-1"
+    assert payload["sallaCartId"] == "cart-1"
+    assert payload["checkoutUrl"] == "https://store.test/checkout/cart-1"
+    assert payload["cartTotal"] == 250.5
+    assert payload["currency"] == "SAR"
+    assert payload["customer"]["phone"] == "0500000000"
+    assert payload["items"][0]["sku"] == "SKU-1"
+    assert payload["tags"] == ["salla-cart-abandoned"]
+
+
+async def test_abandoned_checkout_webhook_is_not_sent_twice_for_same_cart() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def post_inbound_webhook(self, webhook_url: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append({"webhook_url": webhook_url, "payload": payload})
+            return {"status_code": 200, "body": {"ok": True}}
+
+    old_location_id = settings.ghl_location_id
+    old_webhook_url = settings.ghl_abandoned_checkout_webhook_url
+    object.__setattr__(settings, "ghl_location_id", "location-1")
+    object.__setattr__(settings, "ghl_abandoned_checkout_webhook_url", "https://example.test/webhook")
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    customer = Customer(salla_customer_id="salla-customer-1", email="buyer@example.com", phone="0500000000")
+    cart = NormalizedCart(
+        salla_cart_id="cart-1",
+        checkout_url="https://store.test/checkout/cart-1",
+        total_amount=Decimal("100"),
+        currency="SAR",
+        items=[],
+    )
+
+    try:
+        async with session_factory() as session:
+            service = GHLSyncService(session)
+            fake_client = FakeClient()
+            service.client = fake_client  # type: ignore[assignment]
+
+            first = await service.trigger_abandoned_checkout_webhook(
+                customer=customer,
+                cart=cart,
+                contact_id="ghl-contact-1",
+                tags={"salla-cart-abandoned"},
+            )
+            second = await service.trigger_abandoned_checkout_webhook(
+                customer=customer,
+                cart=cart,
+                contact_id="ghl-contact-1",
+                tags={"salla-cart-abandoned"},
+            )
+
+        assert first["sent"] is True
+        assert second["sent"] is False
+        assert second["reason"] == "duplicate"
+        assert len(fake_client.calls) == 1
+        assert fake_client.calls[0]["payload"]["contactId"] == "ghl-contact-1"  # type: ignore[index]
+    finally:
+        object.__setattr__(settings, "ghl_location_id", old_location_id)
+        object.__setattr__(settings, "ghl_abandoned_checkout_webhook_url", old_webhook_url)

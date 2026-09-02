@@ -65,6 +65,34 @@ def test_status_updated_event_normalizes_status_from_payload() -> None:
     assert normalized.order.status == "shipped"
 
 
+def test_normalizes_documented_abandoned_cart_event() -> None:
+    payload = {
+        "event": "abandoned.cart",
+        "merchant": 123,
+        "data": {
+            "id": "cart-1",
+            "checkout_url": "https://store.test/checkout/cart-1",
+            "total": {"amount": 200, "currency": "SAR"},
+            "items": [{"sku": "SKU-2", "name": "Cart Product", "quantity": 1, "price": {"amount": 200}}],
+            "customer": {"id": "55", "name": "Buyer Test", "email": "buyer@example.com", "mobile": "0500000000"},
+        },
+    }
+
+    normalized = SallaNormalizer().normalize(payload)
+
+    assert normalized.event_type == "abandoned.cart"
+    assert normalized.customer is not None
+    assert normalized.customer.salla_customer_id == "55"
+    assert normalized.customer.email == "buyer@example.com"
+    assert normalized.customer.phone == "0500000000"
+    assert normalized.cart is not None
+    assert normalized.cart.salla_cart_id == "cart-1"
+    assert normalized.cart.checkout_url == "https://store.test/checkout/cart-1"
+    assert normalized.cart.total_amount == 200
+    assert normalized.cart.currency == "SAR"
+    assert normalized.cart.items[0].sku == "SKU-2"
+
+
 def test_normalizes_abandoned_cart_payload() -> None:
     payload = {
         "event": "cart.abandoned",

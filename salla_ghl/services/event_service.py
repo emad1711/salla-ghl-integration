@@ -140,12 +140,23 @@ class EventService:
 
     async def receive(self, raw_body: bytes) -> tuple[str, bool, str]:
         payload = json.loads(raw_body.decode("utf-8"))
-        if _is_abandoned_cart_diagnostic_event(payload.get("event")):
+        normalized = self.normalizer.normalize(payload)
+        if _is_abandoned_cart_diagnostic_event(payload.get("event") or normalized.event_type):
+            diagnostic = _cart_abandoned_diagnostic(payload)
+            diagnostic.update(
+                {
+                    "request_received": True,
+                    "normalized_event_type": normalized.event_type,
+                    "salla_customer_id": (
+                        normalized.customer.salla_customer_id if normalized.customer else None
+                    ),
+                    "allowed_event": normalized.event_type in settings.salla_allowed_events,
+                }
+            )
             logger.warning(
                 "SALLA_CART_ABANDONED_DIAGNOSTIC %s",
-                json.dumps(_cart_abandoned_diagnostic(payload), ensure_ascii=False, default=str),
+                json.dumps(diagnostic, ensure_ascii=False, default=str),
             )
-        normalized = self.normalizer.normalize(payload)
         event, created = await self.events.create(
             event_type=normalized.event_type,
             event_id=normalized.event_id,

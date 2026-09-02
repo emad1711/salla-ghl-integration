@@ -15,6 +15,7 @@ async def health() -> dict[str, object]:
         "environment": settings.app_env,
         "allowed_events": sorted(settings.salla_allowed_events),
         "ghl_configured": settings.ghl_configured,
+        "ghl_abandoned_checkout_webhook_configured": bool(settings.ghl_abandoned_checkout_webhook_url),
         "app_base_url_configured": bool(settings.app_base_url),
         "salla_signature_configured": settings.salla_signature_configured,
         "database": await check_database(),

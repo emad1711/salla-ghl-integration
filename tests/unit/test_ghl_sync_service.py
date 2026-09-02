@@ -125,6 +125,45 @@ def test_builds_abandoned_checkout_payload_with_real_cart_values() -> None:
     assert payload["tags"] == ["salla-cart-abandoned"]
 
 
+async def test_abandoned_checkout_webhook_is_skipped_when_url_is_empty() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def post_inbound_webhook(self, webhook_url: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append({"webhook_url": webhook_url, "payload": payload})
+            return {"status_code": 200, "body": {"ok": True}}
+
+    old_webhook_url = settings.ghl_abandoned_checkout_webhook_url
+    object.__setattr__(settings, "ghl_abandoned_checkout_webhook_url", "")
+
+    customer = Customer(salla_customer_id="salla-customer-1", email="buyer@example.com", phone="0500000000")
+    cart = NormalizedCart(
+        salla_cart_id="cart-1",
+        checkout_url="https://store.test/checkout/cart-1",
+        total_amount=Decimal("100"),
+        currency="SAR",
+        items=[],
+    )
+
+    try:
+        service = GHLSyncService(None)  # type: ignore[arg-type]
+        fake_client = FakeClient()
+        service.client = fake_client  # type: ignore[assignment]
+
+        result = await service.trigger_abandoned_checkout_webhook(
+            customer=customer,
+            cart=cart,
+            contact_id="ghl-contact-1",
+            tags={"salla-cart-abandoned"},
+        )
+    finally:
+        object.__setattr__(settings, "ghl_abandoned_checkout_webhook_url", old_webhook_url)
+
+    assert result == {"sent": False, "reason": "missing_webhook_url"}
+    assert fake_client.calls == []
+
+
 async def test_abandoned_checkout_webhook_is_not_sent_twice_for_same_cart() -> None:
     class FakeClient:
         def __init__(self) -> None:

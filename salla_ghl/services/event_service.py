@@ -18,6 +18,12 @@ from salla_ghl.services.workflow_engine import WorkflowEngine
 
 logger = logging.getLogger(__name__)
 
+ABANDONED_CART_EVENT_TYPES = {"cart.abandoned", "abandoned.cart"}
+
+
+def _is_abandoned_cart_diagnostic_event(event_type: Any) -> bool:
+    return str(event_type or "").replace("_", ".") in ABANDONED_CART_EVENT_TYPES
+
 
 def _get_with_path(source: dict[str, Any], *paths: str) -> tuple[str | None, Any]:
     for path in paths:
@@ -134,7 +140,7 @@ class EventService:
 
     async def receive(self, raw_body: bytes) -> tuple[str, bool, str]:
         payload = json.loads(raw_body.decode("utf-8"))
-        if payload.get("event") == "cart.abandoned":
+        if _is_abandoned_cart_diagnostic_event(payload.get("event")):
             logger.warning(
                 "SALLA_CART_ABANDONED_DIAGNOSTIC %s",
                 json.dumps(_cart_abandoned_diagnostic(payload), ensure_ascii=False, default=str),
@@ -248,6 +254,32 @@ class EventService:
         await self.customers.sync_tags(customer, tags)
         ghl_contact_id = await self.ghl.sync_contact(customer, order, tags)
         await self.customers.set_ghl_contact_id(customer, ghl_contact_id)
+        if normalized.cart and _is_abandoned_cart_diagnostic_event(normalized.event_type):
+            logger.warning(
+                "SALLA_CART_ABANDONED_PROCESSING_DIAGNOSTIC %s",
+                json.dumps(
+                    {
+                        "event": normalized.event_type,
+                        "request_received": True,
+                        "normalized_event_type": normalized.event_type,
+                        "customer": {
+                            "local_customer_id": customer.id,
+                            "salla_customer_id": customer.salla_customer_id,
+                            "ghl_contact_id": ghl_contact_id,
+                        },
+                        "ghl_contact_upsert_succeeded": bool(ghl_contact_id),
+                        "abandoned_cart_tags_applied": {
+                            "salla-cart-abandoned": "salla-cart-abandoned" in tags,
+                            "event_tag_present": any(
+                                tag in tags for tag in {"salla-event-cart-abandoned", "salla-event-abandoned-cart"}
+                            ),
+                            "stage_tags_scheduled": any(tag.startswith("salla-cart-abandoned-stage-") for tag in tags),
+                        },
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            )
         abandoned_checkout_event = None
         if normalized.cart:
             abandoned_checkout_event = await self.ghl.trigger_abandoned_checkout_webhook(

@@ -60,7 +60,7 @@ class Settings:
             "order.created,order.updated,order.status.updated,order.completed,order.delivered,order.cancelled,order.refunded,"
             "order.canceled,order.status_changed,order.updated_status,customer.created,customer.registered,"
             "customer.updated,customer.created_or_registered,cart.abandoned,abandoned_cart.created,"
-            "abandoned.cart.created,product.stock.updated,product.quantity.updated,product.updated",
+            "abandoned.cart,abandoned.cart.created,product.stock.updated,product.quantity.updated,product.updated",
         ).split(",")
         if event.strip()
     )

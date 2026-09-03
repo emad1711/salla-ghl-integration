@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from salla_ghl.core.config import settings
-from salla_ghl.db.models import Customer, Order, OutboundStatus
+from salla_ghl.db.models import Customer, Order, OutboundStatus, now_utc
 from salla_ghl.integrations.ghl.client import GHLClient
 from salla_ghl.integrations.salla.normalizer import NormalizedCart
 from salla_ghl.repositories.ghl_event_deliveries import GHLEventDeliveryRepository
@@ -131,15 +131,15 @@ class GHLSyncService:
         contact_id: str,
         tags: set[str],
     ) -> dict[str, Any]:
-        return {
-            "event": "salla.cart_abandoned",
+        payload: dict[str, Any] = {
+            "event": "abandoned.cart",
+            "eventTimestamp": now_utc().isoformat(),
             "locationId": settings.ghl_location_id,
             "contactId": contact_id,
             "email": customer.email,
             "phone": self._phone_value(customer.phone),
             "sallaCustomerId": customer.salla_customer_id,
             "sallaCartId": cart.salla_cart_id,
-            "checkoutUrl": cart.checkout_url,
             "cartTotal": float(cart.total_amount or 0),
             "currency": cart.currency,
             "customer": {
@@ -161,6 +161,9 @@ class GHLSyncService:
             ],
             "tags": sorted(tags),
         }
+        if cart.checkout_url:
+            payload["checkoutUrl"] = cart.checkout_url
+        return payload
 
     def _abandoned_checkout_dedupe_key(self, *, contact_id: str, cart: NormalizedCart) -> str:
         cart_identity = cart.salla_cart_id or cart.checkout_url or "unknown-cart"

@@ -111,7 +111,8 @@ def test_builds_abandoned_checkout_payload_with_real_cart_values() -> None:
     finally:
         object.__setattr__(settings, "ghl_location_id", old_location_id)
 
-    assert payload["event"] == "salla.cart_abandoned"
+    assert payload["event"] == "abandoned.cart"
+    assert payload["eventTimestamp"]
     assert payload["contactId"] == "ghl-contact-1"
     assert payload["email"] == "buyer@example.com"
     assert payload["phone"] == "0500000000"

@@ -222,3 +222,134 @@ async def test_receive_logs_diagnostic_for_documented_abandoned_cart_event(caplo
     assert '"path": "id"' in diagnostic_messages[0]
     assert "buyer@example.com" not in diagnostic_messages[0]
     assert "0500000000" not in diagnostic_messages[0]
+    flow_messages = [
+        record.getMessage() for record in caplog.records if "[ABANDONED_CART_DIAGNOSTIC]" in record.getMessage()
+    ]
+    assert "[ABANDONED_CART_DIAGNOSTIC] abandoned.cart received" in flow_messages
+    assert all("buyer@example.com" not in message for message in flow_messages)
+    assert all("0500000000" not in message for message in flow_messages)
+    assert all("https://store.test/checkout/cart-1" not in message for message in flow_messages)
+    assert all("cart-1" not in message for message in flow_messages if "abandoned.cart received" in message)
+
+
+async def _process_with_fake_ghl(normalized, fake_ghl):
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async with session_factory() as session:
+        service = EventService(session)
+        service.ghl = fake_ghl  # type: ignore[assignment]
+        return await service._process_normalized(normalized)
+
+
+def _flow_messages(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records if "[ABANDONED_CART_DIAGNOSTIC]" in record.getMessage()]
+
+
+async def test_abandoned_cart_flow_logs_upsert_failed_when_contact_id_missing(caplog) -> None:
+    caplog.set_level(logging.WARNING)
+
+    class FakeGHL:
+        async def sync_contact(self, customer, order, tags: set[str]) -> None:
+            return None
+
+        async def trigger_abandoned_checkout_webhook(self, *, customer, cart, contact_id, tags):
+            return {"sent": False, "reason": "missing_contact_id"}
+
+        def loyalty_points(self, customer) -> int:
+            return 0
+
+    result = await _process_with_fake_ghl(_abandoned_cart_event("abandoned.cart"), FakeGHL())
+    messages = _flow_messages(caplog)
+
+    assert result["ghl_contact_id"] is None
+    assert "[ABANDONED_CART_DIAGNOSTIC] GHL upsert: FAILED" in messages
+    assert "[ABANDONED_CART_DIAGNOSTIC] GHL inbound webhook: FAILED" in messages
+    assert "[ABANDONED_CART_DIAGNOSTIC] GHL upsert: SUCCESS" not in messages
+    assert all("buyer@example.com" not in message for message in messages)
+    assert all("0500000000" not in message for message in messages)
+
+
+async def test_abandoned_cart_flow_logs_upsert_failed_on_exception(caplog) -> None:
+    caplog.set_level(logging.WARNING)
+
+    class FakeGHL:
+        async def sync_contact(self, customer, order, tags: set[str]) -> str:
+            raise RuntimeError("ghl upsert unavailable")
+
+        async def trigger_abandoned_checkout_webhook(self, *, customer, cart, contact_id, tags):
+            raise AssertionError("inbound webhook must not run after upsert failure")
+
+        def loyalty_points(self, customer) -> int:
+            return 0
+
+    try:
+        await _process_with_fake_ghl(_abandoned_cart_event("abandoned.cart"), FakeGHL())
+    except RuntimeError as exc:
+        assert str(exc) == "ghl upsert unavailable"
+    else:
+        raise AssertionError("upsert exception must propagate")
+
+    messages = _flow_messages(caplog)
+    assert any(message == "[ABANDONED_CART_DIAGNOSTIC] GHL upsert: FAILED" for message in messages)
+    assert all("GHL inbound webhook" not in message for message in messages)
+    assert all("buyer@example.com" not in message for message in messages)
+    assert all("Authorization" not in message for message in messages)
+    assert any(record.exc_text and "ghl upsert unavailable" in record.exc_text for record in caplog.records)
+
+
+async def test_abandoned_cart_flow_logs_inbound_webhook_failed_on_exception(caplog) -> None:
+    caplog.set_level(logging.WARNING)
+
+    class FakeGHL:
+        async def sync_contact(self, customer, order, tags: set[str]) -> str:
+            return "ghl-contact-1"
+
+        async def trigger_abandoned_checkout_webhook(self, *, customer, cart, contact_id, tags):
+            raise RuntimeError("ghl inbound webhook unavailable")
+
+        def loyalty_points(self, customer) -> int:
+            return 0
+
+    try:
+        await _process_with_fake_ghl(_abandoned_cart_event("abandoned.cart"), FakeGHL())
+    except RuntimeError as exc:
+        assert str(exc) == "ghl inbound webhook unavailable"
+    else:
+        raise AssertionError("inbound webhook exception must propagate")
+
+    messages = _flow_messages(caplog)
+    assert "[ABANDONED_CART_DIAGNOSTIC] GHL upsert: SUCCESS" in messages
+    assert any(message == "[ABANDONED_CART_DIAGNOSTIC] GHL inbound webhook: FAILED" for message in messages)
+    assert all("buyer@example.com" not in message for message in messages)
+    assert all("https://store.test/checkout/cart-1" not in message for message in messages)
+    assert any(record.exc_text and "ghl inbound webhook unavailable" in record.exc_text for record in caplog.records)
+
+
+async def test_order_created_does_not_emit_abandoned_cart_flow_checkpoints(caplog) -> None:
+    caplog.set_level(logging.WARNING)
+
+    class FakeGHL:
+        async def sync_contact(self, customer, order, tags: set[str]) -> str:
+            return "ghl-contact-1"
+
+        async def trigger_abandoned_checkout_webhook(self, *, customer, cart, contact_id, tags):
+            raise AssertionError("order.created must not send abandoned checkout webhook")
+
+        def loyalty_points(self, customer) -> int:
+            return 0
+
+    event = _abandoned_cart_event("order.created")
+    event = NormalizedEvent(
+        event_type="order.created",
+        merchant_id=event.merchant_id,
+        event_id=event.event_id,
+        customer=event.customer,
+        order=None,
+        cart=None,
+        product_stock=None,
+        raw_payload={},
+    )
+    await _process_with_fake_ghl(event, FakeGHL())
+    assert _flow_messages(caplog) == []

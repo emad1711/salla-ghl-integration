@@ -109,6 +109,12 @@ async def test_cart_abandoned_reaches_ghl_webhook_sender_after_contact_upsert(ca
     assert fake_ghl.trigger_calls[0]["contact_id"] == "ghl-contact-1"
     assert fake_ghl.trigger_calls[0]["cart"].checkout_url == "https://store.test/checkout/cart-1"
     assert any("SALLA_CART_ABANDONED_PROCESSING_DIAGNOSTIC" in record.getMessage() for record in caplog.records)
+    flow_messages = [record.getMessage() for record in caplog.records if "[ABANDONED_CART_DIAGNOSTIC]" in record.getMessage()]
+    assert "[ABANDONED_CART_DIAGNOSTIC] GHL upsert: SUCCESS" in flow_messages
+    assert "[ABANDONED_CART_DIAGNOSTIC] GHL inbound webhook: SUCCESS" in flow_messages
+    assert all("buyer@example.com" not in message for message in flow_messages)
+    assert all("0500000000" not in message for message in flow_messages)
+    assert all("https://store.test/checkout/cart-1" not in message for message in flow_messages)
 
 
 async def test_documented_abandoned_cart_applies_tags_and_upserts_contact(caplog) -> None:
@@ -167,6 +173,11 @@ async def test_documented_abandoned_cart_applies_tags_and_upserts_contact(caplog
     assert '"salla-cart-abandoned": true' in processing_messages[0]
     assert "buyer@example.com" not in processing_messages[0]
     assert "0500000000" not in processing_messages[0]
+    flow_messages = [record.getMessage() for record in caplog.records if "[ABANDONED_CART_DIAGNOSTIC]" in record.getMessage()]
+    assert "[ABANDONED_CART_DIAGNOSTIC] GHL upsert: SUCCESS" in flow_messages
+    assert "[ABANDONED_CART_DIAGNOSTIC] GHL inbound webhook: FAILED" in flow_messages
+    assert all("buyer@example.com" not in message for message in flow_messages)
+    assert all("0500000000" not in message for message in flow_messages)
 
 
 async def test_receive_logs_diagnostic_for_documented_abandoned_cart_event(caplog) -> None:

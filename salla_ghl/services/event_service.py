@@ -19,10 +19,16 @@ from salla_ghl.services.workflow_engine import WorkflowEngine
 logger = logging.getLogger(__name__)
 
 ABANDONED_CART_EVENT_TYPES = {"cart.abandoned", "abandoned.cart"}
+# Temporary flow checkpoints. Remove after the failing abandoned.cart step is identified.
+_ABANDONED_CART_FLOW_DIAGNOSTIC = "[ABANDONED_CART_DIAGNOSTIC]"
 
 
 def _is_abandoned_cart_diagnostic_event(event_type: Any) -> bool:
     return str(event_type or "").replace("_", ".") in ABANDONED_CART_EVENT_TYPES
+
+
+def _log_abandoned_cart_flow_checkpoint(checkpoint: str) -> None:
+    logger.warning("%s %s", _ABANDONED_CART_FLOW_DIAGNOSTIC, checkpoint)
 
 
 def _get_with_path(source: dict[str, Any], *paths: str) -> tuple[str | None, Any]:
@@ -142,6 +148,7 @@ class EventService:
         payload = json.loads(raw_body.decode("utf-8"))
         normalized = self.normalizer.normalize(payload)
         if _is_abandoned_cart_diagnostic_event(payload.get("event") or normalized.event_type):
+            _log_abandoned_cart_flow_checkpoint("abandoned.cart received")
             diagnostic = _cart_abandoned_diagnostic(payload)
             diagnostic.update(
                 {
@@ -263,7 +270,16 @@ class EventService:
             if cancelled_count:
                 tags.add("salla-workflows-cancelled")
         await self.customers.sync_tags(customer, tags)
-        ghl_contact_id = await self.ghl.sync_contact(customer, order, tags)
+        try:
+            ghl_contact_id = await self.ghl.sync_contact(customer, order, tags)
+        except Exception:
+            if _is_abandoned_cart_diagnostic_event(normalized.event_type):
+                logger.exception("%s GHL upsert: FAILED", _ABANDONED_CART_FLOW_DIAGNOSTIC)
+            raise
+        if _is_abandoned_cart_diagnostic_event(normalized.event_type):
+            _log_abandoned_cart_flow_checkpoint(
+                "GHL upsert: SUCCESS" if ghl_contact_id else "GHL upsert: FAILED"
+            )
         await self.customers.set_ghl_contact_id(customer, ghl_contact_id)
         if normalized.cart and _is_abandoned_cart_diagnostic_event(normalized.event_type):
             logger.warning(
@@ -293,12 +309,22 @@ class EventService:
             )
         abandoned_checkout_event = None
         if normalized.cart:
-            abandoned_checkout_event = await self.ghl.trigger_abandoned_checkout_webhook(
-                customer=customer,
-                cart=normalized.cart,
-                contact_id=ghl_contact_id,
-                tags=tags,
-            )
+            try:
+                abandoned_checkout_event = await self.ghl.trigger_abandoned_checkout_webhook(
+                    customer=customer,
+                    cart=normalized.cart,
+                    contact_id=ghl_contact_id,
+                    tags=tags,
+                )
+            except Exception:
+                if _is_abandoned_cart_diagnostic_event(normalized.event_type):
+                    logger.exception("%s GHL inbound webhook: FAILED", _ABANDONED_CART_FLOW_DIAGNOSTIC)
+                raise
+            if _is_abandoned_cart_diagnostic_event(normalized.event_type):
+                webhook_sent = bool(abandoned_checkout_event and abandoned_checkout_event.get("sent"))
+                _log_abandoned_cart_flow_checkpoint(
+                    "GHL inbound webhook: SUCCESS" if webhook_sent else "GHL inbound webhook: FAILED"
+                )
         opportunity_id = None
         if order and normalized.event_type == "order.created":
             opportunity_id = await self.ghl.sync_order_opportunity(customer, order)

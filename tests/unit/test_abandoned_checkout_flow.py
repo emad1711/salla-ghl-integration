@@ -68,12 +68,15 @@ async def test_cart_abandoned_reaches_ghl_webhook_sender_after_contact_upsert(ca
         def __init__(self) -> None:
             self.synced_tags: set[str] | None = None
             self.trigger_calls: list[dict[str, object]] = []
+            self.call_order: list[str] = []
 
         async def sync_contact(self, customer, order, tags: set[str]) -> str:
+            self.call_order.append("sync_contact")
             self.synced_tags = tags
             return "ghl-contact-1"
 
         async def trigger_abandoned_checkout_webhook(self, *, customer, cart, contact_id, tags):
+            self.call_order.append("trigger_abandoned_checkout_webhook")
             self.trigger_calls.append(
                 {
                     "customer": customer,
@@ -102,6 +105,7 @@ async def test_cart_abandoned_reaches_ghl_webhook_sender_after_contact_upsert(ca
         result = await service._process_normalized(normalized)
 
     assert result["ghl_contact_id"] == "ghl-contact-1"
+    assert fake_ghl.call_order == ["sync_contact", "trigger_abandoned_checkout_webhook"]
     assert fake_ghl.synced_tags is not None
     assert "salla-cart-abandoned" in fake_ghl.synced_tags
     assert "salla-event-cart-abandoned" in fake_ghl.synced_tags

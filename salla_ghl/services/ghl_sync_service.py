@@ -1,3 +1,5 @@
+import json
+import logging
 import os
 from decimal import Decimal, ROUND_FLOOR
 from typing import Any
@@ -9,6 +11,8 @@ from salla_ghl.db.models import Customer, Order, OutboundStatus, now_utc
 from salla_ghl.integrations.ghl.client import GHLClient
 from salla_ghl.integrations.salla.normalizer import NormalizedCart
 from salla_ghl.repositories.ghl_event_deliveries import GHLEventDeliveryRepository
+
+logger = logging.getLogger(__name__)
 
 
 class GHLSyncService:
@@ -86,8 +90,16 @@ class GHLSyncService:
         tags: set[str],
     ) -> dict[str, Any]:
         if not settings.ghl_abandoned_checkout_webhook_url:
+            logger.warning(
+                "GHL inbound webhook skipped %s",
+                json.dumps({"phase": "skipped", "success": False, "reason": "missing_webhook_url"}),
+            )
             return {"sent": False, "reason": "missing_webhook_url"}
         if not contact_id:
+            logger.warning(
+                "GHL inbound webhook skipped %s",
+                json.dumps({"phase": "skipped", "success": False, "reason": "missing_contact_id"}),
+            )
             return {"sent": False, "reason": "missing_contact_id"}
 
         payload = self._build_abandoned_checkout_payload(customer=customer, cart=cart, contact_id=contact_id, tags=tags)

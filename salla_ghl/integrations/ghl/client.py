@@ -129,11 +129,47 @@ class GHLClient:
     async def upsert_opportunity(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.request("POST", "/opportunities/upsert", payload)
 
+    def _mask_contact_id(self, value: Any) -> str | None:
+        if not value:
+            return None
+        contact_id = str(value)
+        if len(contact_id) <= 6:
+            return "***"
+        return f"{contact_id[:4]}***{contact_id[-2:]}"
+
+    def _inbound_webhook_log_fields(
+        self,
+        payload: dict[str, Any],
+        *,
+        phase: str,
+        status_code: int | None = None,
+        success: bool | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        fields: dict[str, Any] = {
+            "phase": phase,
+            "method": "POST",
+            "event": payload.get("event"),
+            "contactId_masked": self._mask_contact_id(payload.get("contactId")),
+            "webhook_url_configured": bool(settings.ghl_abandoned_checkout_webhook_url),
+        }
+        if status_code is not None:
+            fields["status_code"] = status_code
+        if success is not None:
+            fields["success"] = success
+        if error:
+            fields["error"] = error
+        return fields
+
     async def post_inbound_webhook(self, webhook_url: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
+        logger.warning(
+            "GHL inbound webhook request started %s",
+            json.dumps(self._inbound_webhook_log_fields(payload, phase="webhook request started")),
+        )
         try:
             async with httpx.AsyncClient(timeout=settings.ghl_timeout_seconds) as client:
                 response = await client.post(webhook_url, headers=headers, json=payload)
@@ -141,34 +177,28 @@ class GHLClient:
             logger.error(
                 "GHL inbound webhook failed %s",
                 json.dumps(
-                    {
-                        "url": webhook_url,
-                        "request_payload": payload,
-                        "status_code": None,
-                        "response_text": str(exc),
-                        "response_json": None,
-                        "validation_errors": None,
-                    },
-                    ensure_ascii=False,
-                    default=str,
+                    self._inbound_webhook_log_fields(
+                        payload,
+                        phase="failure",
+                        success=False,
+                        error=type(exc).__name__,
+                    )
                 ),
             )
             raise GHLClientError(str(exc)) from exc
 
+        response_json = self._response_json(response)
         if response.status_code >= 400:
-            response_json = self._response_json(response)
             logger.error(
                 "GHL inbound webhook failed %s",
                 json.dumps(
-                    {
-                        "url": webhook_url,
-                        "request_payload": payload,
-                        "status_code": response.status_code,
-                        "response_text": response.text,
-                        "response_json": response_json,
-                        "validation_errors": self._validation_errors(response_json),
-                    },
-                    ensure_ascii=False,
+                    self._inbound_webhook_log_fields(
+                        payload,
+                        phase="failure",
+                        status_code=response.status_code,
+                        success=False,
+                        error="http_error",
+                    ),
                     default=str,
                 ),
             )
@@ -178,7 +208,18 @@ class GHLClient:
                 response_body=response.text,
             )
 
-        response_json = self._response_json(response)
+        logger.warning(
+            "GHL inbound webhook success %s",
+            json.dumps(
+                self._inbound_webhook_log_fields(
+                    payload,
+                    phase="success",
+                    status_code=response.status_code,
+                    success=True,
+                ),
+                default=str,
+            ),
+        )
         return {
             "status_code": response.status_code,
             "body": response_json if response_json is not None else response.text,

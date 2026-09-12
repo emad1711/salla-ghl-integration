@@ -60,7 +60,7 @@ class Settings:
             "order.created,order.updated,order.status.updated,order.completed,order.delivered,order.cancelled,order.refunded,"
             "order.canceled,order.status_changed,order.updated_status,customer.created,customer.registered,"
             "customer.updated,customer.created_or_registered,cart.abandoned,abandoned_cart.created,"
-            "abandoned.cart,abandoned.cart.created,product.stock.updated,product.quantity.updated,product.updated",
+            "abandoned.cart,abandoned.cart.created,abandoned.cart.purchased,product.stock.updated,product.quantity.updated,product.updated",
         ).split(",")
         if event.strip()
     )
@@ -75,6 +75,7 @@ class Settings:
     ghl_pipeline_stage_id: str = os.getenv("GHL_PIPELINE_STAGE_ID", "")
     ghl_opportunity_status: str = os.getenv("GHL_OPPORTUNITY_STATUS", "open")
     ghl_abandoned_checkout_webhook_url: str = os.getenv("GHL_ABANDONED_CHECKOUT_WEBHOOK_URL", "")
+    ghl_purchase_webhook_url: str = os.getenv("GHL_PURCHASE_WEBHOOK_URL", "")
 
     vip_total_spent_threshold: float = _float(
         os.getenv("VIP_TOTAL_SPENT_THRESHOLD") or os.getenv("GHL_VIP_ORDER_TOTAL_THRESHOLD"),

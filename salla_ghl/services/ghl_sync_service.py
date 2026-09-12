@@ -181,6 +181,178 @@ class GHLSyncService:
         cart_identity = cart.salla_cart_id or cart.checkout_url or "unknown-cart"
         return f"ghl:abandoned_checkout:{settings.ghl_location_id}:{contact_id}:{cart_identity}"
 
+    async def trigger_purchase_webhook(
+        self,
+        *,
+        customer: Customer,
+        contact_id: str | None,
+        tags: set[str],
+        event_type: str,
+        cart: NormalizedCart | None = None,
+        order_id: str | None = None,
+    ) -> dict[str, Any]:
+        if not settings.ghl_purchase_webhook_url:
+            logger.warning(
+                "SALLA_PURCHASE_GHL_TRIGGER %s",
+                json.dumps({"phase": "skipped", "success": False, "reason": "missing_webhook_url", "event": event_type}),
+            )
+            return {"sent": False, "reason": "missing_webhook_url"}
+        if not contact_id:
+            logger.warning(
+                "SALLA_PURCHASE_GHL_TRIGGER %s",
+                json.dumps({"phase": "skipped", "success": False, "reason": "missing_contact_id", "event": event_type}),
+            )
+            return {"sent": False, "reason": "missing_contact_id"}
+
+        payload = self._build_purchase_payload(
+            customer=customer,
+            cart=cart,
+            contact_id=contact_id,
+            tags=tags,
+            event_type=event_type,
+            order_id=order_id,
+        )
+        self._log_purchase_trigger(
+            phase="outbound_request",
+            payload=payload,
+            extra={"webhook_url_configured": True},
+        )
+        dedupe_key = self._purchase_dedupe_key(contact_id=contact_id, cart=cart, order_id=order_id)
+        delivery, created = await self.event_deliveries.get_or_create(
+            event_name="salla.cart_purchased",
+            dedupe_key=dedupe_key,
+            request_body=payload,
+        )
+        if not created and delivery.status == OutboundStatus.succeeded:
+            self._log_purchase_trigger(
+                phase="skipped",
+                payload=payload,
+                extra={"success": False, "reason": "duplicate", "dedupe_key": dedupe_key},
+            )
+            return {"sent": False, "reason": "duplicate", "dedupe_key": dedupe_key}
+
+        delivery.request_body = payload
+        delivery.status = OutboundStatus.pending
+        await self.session.flush()
+
+        try:
+            response = await self.client.post_inbound_webhook(settings.ghl_purchase_webhook_url, payload)
+        except Exception as exc:
+            await self.event_deliveries.mark_response(
+                delivery,
+                status_code=getattr(exc, "status_code", None),
+                response_body=getattr(exc, "response_body", None) or str(exc),
+                succeeded=False,
+            )
+            self._log_purchase_trigger(
+                phase="response",
+                payload=payload,
+                extra={
+                    "success": False,
+                    "status_code": getattr(exc, "status_code", None),
+                    "response_body": getattr(exc, "response_body", None) or str(exc),
+                },
+            )
+            raise
+
+        await self.event_deliveries.mark_response(
+            delivery,
+            status_code=response.get("status_code"),
+            response_body=str(response.get("body")),
+            succeeded=True,
+        )
+        self._log_purchase_trigger(
+            phase="response",
+            payload=payload,
+            extra={
+                "success": True,
+                "status_code": response.get("status_code"),
+                "response_body": response.get("body"),
+            },
+        )
+        return {"sent": True, "dedupe_key": dedupe_key, "response": response}
+
+    def _build_purchase_payload(
+        self,
+        *,
+        customer: Customer,
+        cart: NormalizedCart | None,
+        contact_id: str,
+        tags: set[str],
+        event_type: str,
+        order_id: str | None,
+    ) -> dict[str, Any]:
+        items = cart.items if cart else []
+        total_amount = cart.total_amount if cart else None
+        currency = cart.currency if cart else None
+        payload: dict[str, Any] = {
+            "event": event_type,
+            "eventTimestamp": now_utc().isoformat(),
+            "locationId": settings.ghl_location_id,
+            "contactId": contact_id,
+            "email": customer.email,
+            "phone": self._phone_value(customer.phone),
+            "sallaCustomerId": customer.salla_customer_id,
+            "sallaCartId": cart.salla_cart_id if cart else None,
+            "sallaOrderId": order_id,
+            "orderTotal": float(total_amount or 0),
+            "currency": currency,
+            "customer": {
+                "email": customer.email,
+                "phone": self._phone_value(customer.phone),
+                "firstName": customer.first_name,
+                "lastName": customer.last_name,
+            },
+            "items": [
+                {
+                    "productId": item.product_id,
+                    "sku": item.sku,
+                    "name": item.name,
+                    "quantity": item.quantity,
+                    "unitPrice": float(item.unit_price or 0),
+                    "totalPrice": float(item.total_price or 0),
+                }
+                for item in items
+            ],
+            "tags": sorted(tags),
+        }
+        if cart and cart.checkout_url:
+            payload["checkoutUrl"] = cart.checkout_url
+        return payload
+
+    def _purchase_dedupe_key(
+        self,
+        *,
+        contact_id: str,
+        cart: NormalizedCart | None,
+        order_id: str | None,
+    ) -> str:
+        identity = (cart.salla_cart_id if cart and cart.salla_cart_id else None) or order_id or "unknown-purchase"
+        return f"ghl:purchase:{settings.ghl_location_id}:{contact_id}:{identity}"
+
+    def _log_purchase_trigger(
+        self,
+        *,
+        phase: str,
+        payload: dict[str, Any],
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        fields: dict[str, Any] = {
+            "phase": phase,
+            "event": payload.get("event"),
+            "sallaCartId": payload.get("sallaCartId"),
+            "sallaOrderId": payload.get("sallaOrderId"),
+            "checkout_url": payload.get("checkoutUrl"),
+            "checkout_url_present": "checkoutUrl" in payload,
+            "orderTotal": payload.get("orderTotal"),
+            "currency": payload.get("currency"),
+            "items_count": len(payload.get("items") or []),
+            "contactId_present": bool(payload.get("contactId")),
+        }
+        if extra:
+            fields.update(extra)
+        logger.warning("SALLA_PURCHASE_GHL_TRIGGER %s", json.dumps(fields, ensure_ascii=False, default=str))
+
     def _build_opportunity_payload(self, customer: Customer, order: Order) -> dict[str, Any]:
         return {
             "locationId": settings.ghl_location_id,

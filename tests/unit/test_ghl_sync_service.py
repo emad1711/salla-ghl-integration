@@ -396,3 +396,225 @@ async def test_inbound_webhook_http_error_is_logged_as_failure(caplog) -> None:
     assert '"success": false' in failed[0]
     assert '"status_code": 500' in failed[0]
     assert '"event": "abandoned.cart"' in failed[0]
+
+
+def test_builds_purchase_payload_with_official_event_and_checkout_url() -> None:
+    old_location_id = settings.ghl_location_id
+    object.__setattr__(settings, "ghl_location_id", "location-1")
+    customer = Customer(
+        salla_customer_id="salla-customer-1",
+        email="buyer@example.com",
+        phone="0500000000",
+        first_name="Buyer",
+        last_name="Test",
+    )
+    cart = NormalizedCart(
+        salla_cart_id="cart-1",
+        checkout_url="https://store.test/checkout/cart-1",
+        total_amount=Decimal("250.50"),
+        currency="SAR",
+        items=[
+            NormalizedOrderItem(
+                product_id="product-1",
+                sku="SKU-1",
+                name="Product 1",
+                quantity=2,
+                unit_price=Decimal("100.25"),
+                total_price=Decimal("200.50"),
+            )
+        ],
+    )
+
+    try:
+        payload = GHLSyncService(None)._build_purchase_payload(  # type: ignore[arg-type]
+            customer=customer,
+            cart=cart,
+            contact_id="ghl-contact-1",
+            tags={"salla-cart-purchased"},
+            event_type="abandoned.cart.purchased",
+            order_id="order-9",
+        )
+    finally:
+        object.__setattr__(settings, "ghl_location_id", old_location_id)
+
+    assert payload["event"] == "abandoned.cart.purchased"
+    assert payload["eventTimestamp"]
+    assert payload["contactId"] == "ghl-contact-1"
+    assert payload["sallaCartId"] == "cart-1"
+    assert payload["sallaOrderId"] == "order-9"
+    assert payload["checkoutUrl"] == "https://store.test/checkout/cart-1"
+    assert payload["orderTotal"] == 250.5
+    assert payload["currency"] == "SAR"
+    assert payload["items"][0]["sku"] == "SKU-1"
+    assert payload["tags"] == ["salla-cart-purchased"]
+    assert payload["event"] != "abandoned.cart"
+    assert payload["event"] != "purchase"
+
+
+def test_purchase_payload_omits_checkout_url_when_missing() -> None:
+    customer = Customer(salla_customer_id="salla-customer-1", email="buyer@example.com", phone="0500000000")
+    cart = NormalizedCart(
+        salla_cart_id="cart-1",
+        checkout_url=None,
+        total_amount=Decimal("34.99"),
+        currency="SAR",
+        items=[],
+    )
+
+    payload = GHLSyncService(None)._build_purchase_payload(  # type: ignore[arg-type]
+        customer=customer,
+        cart=cart,
+        contact_id="ghl-contact-1",
+        tags=set(),
+        event_type="abandoned.cart.purchased",
+        order_id=None,
+    )
+
+    assert "checkoutUrl" not in payload
+    assert payload["sallaOrderId"] is None
+    assert payload["orderTotal"] == 34.99
+
+
+async def test_purchase_webhook_is_skipped_when_url_is_empty(caplog) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def post_inbound_webhook(self, webhook_url: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append({"webhook_url": webhook_url, "payload": payload})
+            return {"status_code": 200, "body": {"ok": True}}
+
+    caplog.set_level(logging.WARNING)
+    old_webhook_url = settings.ghl_purchase_webhook_url
+    object.__setattr__(settings, "ghl_purchase_webhook_url", "")
+    customer = Customer(salla_customer_id="salla-customer-1", email="buyer@example.com", phone="0500000000")
+    cart = NormalizedCart(salla_cart_id="cart-1", checkout_url=None, total_amount=Decimal("10"), currency="SAR", items=[])
+
+    try:
+        service = GHLSyncService(None)  # type: ignore[arg-type]
+        fake_client = FakeClient()
+        service.client = fake_client  # type: ignore[assignment]
+        result = await service.trigger_purchase_webhook(
+            customer=customer,
+            contact_id="ghl-contact-1",
+            tags=set(),
+            event_type="abandoned.cart.purchased",
+            cart=cart,
+            order_id=None,
+        )
+    finally:
+        object.__setattr__(settings, "ghl_purchase_webhook_url", old_webhook_url)
+
+    assert result == {"sent": False, "reason": "missing_webhook_url"}
+    assert fake_client.calls == []
+    skip_logs = [record.getMessage() for record in caplog.records if "SALLA_PURCHASE_GHL_TRIGGER" in record.getMessage()]
+    assert skip_logs
+    assert '"reason": "missing_webhook_url"' in skip_logs[0]
+
+
+async def test_purchase_webhook_posts_inbound_trigger_and_logs_response(caplog) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def post_inbound_webhook(self, webhook_url: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append({"webhook_url": webhook_url, "payload": payload})
+            return {"status_code": 200, "body": {"ok": True}}
+
+    caplog.set_level(logging.WARNING)
+    old_location_id = settings.ghl_location_id
+    old_webhook_url = settings.ghl_purchase_webhook_url
+    object.__setattr__(settings, "ghl_location_id", "location-1")
+    object.__setattr__(settings, "ghl_purchase_webhook_url", "https://example.test/purchase-webhook")
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    customer = Customer(
+        salla_customer_id="salla-customer-1",
+        email="buyer@example.com",
+        phone="0500000000",
+        first_name="Buyer",
+        last_name="Test",
+    )
+    cart = NormalizedCart(
+        salla_cart_id="cart-1",
+        checkout_url="https://store.test/checkout/cart-1",
+        total_amount=Decimal("100"),
+        currency="SAR",
+        items=[],
+    )
+
+    try:
+        async with session_factory() as session:
+            service = GHLSyncService(session)
+            fake_client = FakeClient()
+            service.client = fake_client  # type: ignore[assignment]
+            result = await service.trigger_purchase_webhook(
+                customer=customer,
+                contact_id="ghl-contact-1",
+                tags={"salla-cart-purchased"},
+                event_type="abandoned.cart.purchased",
+                cart=cart,
+                order_id="order-9",
+            )
+    finally:
+        object.__setattr__(settings, "ghl_location_id", old_location_id)
+        object.__setattr__(settings, "ghl_purchase_webhook_url", old_webhook_url)
+
+    assert result["sent"] is True
+    assert fake_client.calls[0]["webhook_url"] == "https://example.test/purchase-webhook"
+    payload = fake_client.calls[0]["payload"]
+    assert payload["event"] == "abandoned.cart.purchased"
+    assert payload["contactId"] == "ghl-contact-1"
+    assert payload["checkoutUrl"] == "https://store.test/checkout/cart-1"
+    assert payload["sallaOrderId"] == "order-9"
+    assert "/events" not in str(fake_client.calls[0]["webhook_url"])
+    logs = [record.getMessage() for record in caplog.records if "SALLA_PURCHASE_GHL_TRIGGER" in record.getMessage()]
+    assert any('"phase": "outbound_request"' in message for message in logs)
+    assert any('"phase": "response"' in message for message in logs)
+    assert any('"status_code": 200' in message for message in logs)
+    assert any("checkout_url" in message for message in logs)
+    assert all("Authorization" not in message for message in logs)
+
+
+async def test_purchase_webhook_failure_marks_delivery_failed() -> None:
+    class FakeClient:
+        async def post_inbound_webhook(self, webhook_url: str, payload: dict[str, object]) -> dict[str, object]:
+            raise GHLClientError("GHL inbound webhook failed", status_code=500, response_body="upstream error")
+
+    old_location_id = settings.ghl_location_id
+    old_webhook_url = settings.ghl_purchase_webhook_url
+    object.__setattr__(settings, "ghl_location_id", "location-1")
+    object.__setattr__(settings, "ghl_purchase_webhook_url", "https://example.test/purchase-webhook")
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    customer = Customer(salla_customer_id="salla-customer-1", email="buyer@example.com", phone="0500000000")
+    cart = NormalizedCart(salla_cart_id="cart-1", checkout_url=None, total_amount=Decimal("10"), currency="SAR", items=[])
+
+    try:
+        async with session_factory() as session:
+            service = GHLSyncService(session)
+            service.client = FakeClient()  # type: ignore[assignment]
+            try:
+                await service.trigger_purchase_webhook(
+                    customer=customer,
+                    contact_id="ghl-contact-1",
+                    tags=set(),
+                    event_type="abandoned.cart.purchased",
+                    cart=cart,
+                    order_id=None,
+                )
+            except GHLClientError as exc:
+                assert exc.status_code == 500
+            else:
+                raise AssertionError("purchase webhook HTTP failure must raise")
+    finally:
+        object.__setattr__(settings, "ghl_location_id", old_location_id)
+        object.__setattr__(settings, "ghl_purchase_webhook_url", old_webhook_url)

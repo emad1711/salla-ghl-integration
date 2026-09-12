@@ -55,6 +55,21 @@ class WorkflowRepository:
         )
         return list(result.scalars().all())
 
+    async def find_customer_id_by_cart_id(self, cart_id: str | None) -> str | None:
+        if not cart_id:
+            return None
+        result = await self.session.execute(
+            select(WorkflowRun).where(
+                WorkflowRun.workflow_type == "abandoned_cart_recovery",
+                WorkflowRun.customer_id.is_not(None),
+            )
+        )
+        for run in result.scalars():
+            metadata = run.metadata_json or {}
+            if str(metadata.get("cart_id")) == str(cart_id):
+                return run.customer_id
+        return None
+
     async def cancel_for_order(self, order_id: str, workflow_types: set[str]) -> int:
         result = await self.session.execute(
             select(WorkflowRun).where(

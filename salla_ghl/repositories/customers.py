@@ -11,6 +11,9 @@ class CustomerRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    async def get(self, customer_id: str) -> Customer | None:
+        return await self.session.get(Customer, customer_id)
+
     async def find_by_identity(
         self,
         *,

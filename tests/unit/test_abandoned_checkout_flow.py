@@ -341,6 +341,9 @@ async def test_order_created_does_not_emit_abandoned_cart_flow_checkpoints(caplo
         async def trigger_abandoned_checkout_webhook(self, *, customer, cart, contact_id, tags):
             raise AssertionError("order.created must not send abandoned checkout webhook")
 
+        async def trigger_purchase_webhook(self, **kwargs):
+            raise AssertionError("order.created must not send purchase webhook")
+
         def loyalty_points(self, customer) -> int:
             return 0
 

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from salla_ghl.core.config import settings
 from salla_ghl.core.security import payload_hash
 from salla_ghl.db.models import EventStatus
-from salla_ghl.integrations.salla.normalizer import NormalizedEvent, SallaNormalizer, normalize_tag
+from salla_ghl.integrations.salla.normalizer import NormalizedEvent, SallaNormalizer, get_nested, normalize_tag
 from salla_ghl.repositories.customers import CustomerRepository
 from salla_ghl.repositories.events import EventRepository
 from salla_ghl.repositories.orders import OrderRepository
@@ -19,12 +19,21 @@ from salla_ghl.services.workflow_engine import WorkflowEngine
 logger = logging.getLogger(__name__)
 
 ABANDONED_CART_EVENT_TYPES = {"cart.abandoned", "abandoned.cart"}
+PURCHASE_EVENT_TYPES = {"abandoned.cart.purchased"}
 # Temporary flow checkpoints. Remove after the failing abandoned.cart step is identified.
 _ABANDONED_CART_FLOW_DIAGNOSTIC = "[ABANDONED_CART_DIAGNOSTIC]"
 
 
+def _normalize_event_name(event_type: Any) -> str:
+    return str(event_type or "").replace("_", ".")
+
+
 def _is_abandoned_cart_diagnostic_event(event_type: Any) -> bool:
-    return str(event_type or "").replace("_", ".") in ABANDONED_CART_EVENT_TYPES
+    return _normalize_event_name(event_type) in ABANDONED_CART_EVENT_TYPES
+
+
+def _is_purchase_event(event_type: Any) -> bool:
+    return _normalize_event_name(event_type) in PURCHASE_EVENT_TYPES
 
 
 def _log_abandoned_cart_flow_checkpoint(checkpoint: str) -> None:
@@ -132,6 +141,38 @@ def _cart_abandoned_diagnostic(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _purchase_order_id(normalized: NormalizedEvent) -> str | None:
+    if normalized.order and normalized.order.salla_order_id:
+        return normalized.order.salla_order_id
+    data = normalized.raw_payload.get("data") if isinstance(normalized.raw_payload.get("data"), dict) else {}
+    order_id = get_nested(data, "order_id", "order.id", "purchase_id")
+    return str(order_id) if order_id else None
+
+
+def _log_purchase_received(payload: dict[str, Any], normalized: NormalizedEvent) -> None:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    cart_id_path, cart_id = _get_with_path(data, "id", "cart.id", "checkout.id")
+    checkout_url_path, checkout_url = _get_with_path(data, "checkout_url", "urls.checkout", "url", "cart.url")
+    order_id_path, order_id = _get_with_path(data, "order_id", "order.id", "purchase_id")
+    logger.warning(
+        "SALLA_PURCHASE_EVENT %s",
+        json.dumps(
+            {
+                "phase": "received",
+                "event": payload.get("event"),
+                "detected_event_name": normalized.event_type,
+                "cart_id": {"path": cart_id_path, "value": cart_id},
+                "order_id": {"path": order_id_path, "value": order_id},
+                "checkout_url": {"path": checkout_url_path, "value": checkout_url},
+                "checkout_url_present": bool(checkout_url),
+                "allowed_event": normalized.event_type in settings.salla_allowed_events,
+            },
+            ensure_ascii=False,
+            default=str,
+        ),
+    )
+
+
 class EventService:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -164,6 +205,8 @@ class EventService:
                 "SALLA_CART_ABANDONED_DIAGNOSTIC %s",
                 json.dumps(diagnostic, ensure_ascii=False, default=str),
             )
+        if _is_purchase_event(payload.get("event") or normalized.event_type):
+            _log_purchase_received(payload, normalized)
         event, created = await self.events.create(
             event_type=normalized.event_type,
             event_id=normalized.event_id,
@@ -209,18 +252,45 @@ class EventService:
             raise
 
     async def _process_normalized(self, normalized: NormalizedEvent) -> dict[str, Any]:
-        if not normalized.customer:
+        if _is_purchase_event(normalized.event_type):
+            _log_purchase_received(normalized.raw_payload or {"event": normalized.event_type}, normalized)
+
+        customer = None
+        if normalized.customer:
+            customer = await self.customers.upsert_identity(
+                salla_customer_id=normalized.customer.salla_customer_id,
+                email=normalized.customer.email,
+                phone=normalized.customer.phone,
+                first_name=normalized.customer.first_name,
+                last_name=normalized.customer.last_name,
+            )
+        elif _is_purchase_event(normalized.event_type) and normalized.cart and normalized.cart.salla_cart_id:
+            existing_customer_id = await self.workflow_engine.repo.find_customer_id_by_cart_id(
+                normalized.cart.salla_cart_id
+            )
+            if existing_customer_id:
+                customer = await self.customers.get(existing_customer_id)
+
+        if not customer:
             if normalized.product_stock:
                 return await self._process_product_stock(normalized)
+            if _is_purchase_event(normalized.event_type):
+                logger.warning(
+                    "SALLA_PURCHASE_EVENT %s",
+                    json.dumps(
+                        {
+                            "phase": "ignored",
+                            "reason": "missing_customer",
+                            "event": normalized.event_type,
+                            "detected_event_name": normalized.event_type,
+                            "cart_id": normalized.cart.salla_cart_id if normalized.cart else None,
+                            "checkout_url": normalized.cart.checkout_url if normalized.cart else None,
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                )
             return {"ignored": True, "reason": "missing_customer"}
-
-        customer = await self.customers.upsert_identity(
-            salla_customer_id=normalized.customer.salla_customer_id,
-            email=normalized.customer.email,
-            phone=normalized.customer.phone,
-            first_name=normalized.customer.first_name,
-            last_name=normalized.customer.last_name,
-        )
 
         order = None
         product_skus: list[str] = []
@@ -262,7 +332,7 @@ class EventService:
         tags = self.segmentation.tags_for_customer(customer, order, product_skus)
         tags.update(self._event_tags(normalized))
         tags.update(await self.workflow_engine.schedule_for_order(customer, order))
-        if normalized.cart:
+        if normalized.cart and _is_abandoned_cart_diagnostic_event(normalized.event_type):
             tags.update(await self.workflow_engine.schedule_abandoned_cart(customer, normalized.cart.salla_cart_id))
             await self._record_product_interests(customer.id, normalized.cart.items, source="abandoned_cart")
         if order and self._is_cancel_or_refund(normalized):
@@ -308,7 +378,8 @@ class EventService:
                 ),
             )
         abandoned_checkout_event = None
-        if normalized.cart:
+        purchase_event = None
+        if normalized.cart and _is_abandoned_cart_diagnostic_event(normalized.event_type):
             try:
                 abandoned_checkout_event = await self.ghl.trigger_abandoned_checkout_webhook(
                     customer=customer,
@@ -325,6 +396,33 @@ class EventService:
                 _log_abandoned_cart_flow_checkpoint(
                     "GHL inbound webhook: SUCCESS" if webhook_sent else "GHL inbound webhook: FAILED"
                 )
+        elif _is_purchase_event(normalized.event_type):
+            try:
+                purchase_event = await self.ghl.trigger_purchase_webhook(
+                    customer=customer,
+                    contact_id=ghl_contact_id,
+                    tags=tags,
+                    event_type=normalized.event_type,
+                    cart=normalized.cart,
+                    order_id=_purchase_order_id(normalized),
+                )
+            except Exception:
+                logger.exception(
+                    "SALLA_PURCHASE_GHL_TRIGGER %s",
+                    json.dumps(
+                        {
+                            "phase": "response",
+                            "success": False,
+                            "event": normalized.event_type,
+                            "sallaCartId": normalized.cart.salla_cart_id if normalized.cart else None,
+                            "sallaOrderId": _purchase_order_id(normalized),
+                            "checkout_url": normalized.cart.checkout_url if normalized.cart else None,
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                )
+                raise
         opportunity_id = None
         if order and normalized.event_type == "order.created":
             opportunity_id = await self.ghl.sync_order_opportunity(customer, order)
@@ -338,6 +436,7 @@ class EventService:
             "customer_id": customer.id,
             "order_id": order.id if order else None,
             "abandoned_checkout_event": abandoned_checkout_event,
+            "purchase_event": purchase_event,
         }
 
     async def _record_product_interests(
@@ -417,12 +516,20 @@ class EventService:
             if self._is_cancel_or_refund(normalized):
                 tags.add("salla-stop-cross-sell")
 
-        if normalized.cart:
+        if normalized.cart and _is_abandoned_cart_diagnostic_event(normalized.event_type):
             tags.add("salla-cart-abandoned")
             for item in normalized.cart.items:
                 product_tag = normalize_tag(item.sku or item.name)
                 if product_tag:
                     tags.add(f"salla-cart-product-{product_tag}"[:50])
+
+        if _is_purchase_event(normalized.event_type):
+            tags.add("salla-cart-purchased")
+            if normalized.cart:
+                for item in normalized.cart.items:
+                    product_tag = normalize_tag(item.sku or item.name)
+                    if product_tag:
+                        tags.add(f"salla-purchase-product-{product_tag}"[:50])
 
         if normalized.product_stock:
             tags.add("salla-product-stock-updated")
